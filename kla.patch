@@ -1,0 +1,492 @@
+Only in Galois-2.1.8-mod/apps/barneshut: CMakeCache.txt
+Only in Galois-2.1.8-mod/apps/barneshut: CMakeFiles
+diff -ru Galois-2.1.8/apps/bfs/bfs.cpp Galois-2.1.8-mod/apps/bfs/bfs.cpp
+--- Galois-2.1.8/apps/bfs/bfs.cpp	2013-05-09 13:24:50.000000000 -0500
++++ Galois-2.1.8-mod/apps/bfs/bfs.cpp	2014-06-03 18:21:19.000000000 -0500
+@@ -68,6 +68,30 @@
+   serialAsync,
+   serialMin,
+   parallelAsync,
++  parallelKLA1,
++  parallelKLA2,
++  parallelKLA4,
++  parallelKLA8,
++  parallelKLA16,
++  parallelKLA32,
++  parallelKLA64,
++  parallelKLA128,
++  parallelKLA256,
++  parallelKLA512,
++  parallelKLA1024,
++  parallelKLA1048576,
++  parallelKLABarrier1,
++  parallelKLABarrier2,
++  parallelKLABarrier4,
++  parallelKLABarrier8,
++  parallelKLABarrier16,
++  parallelKLABarrier32,
++  parallelKLABarrier64,
++  parallelKLABarrier128,
++  parallelKLABarrier256,
++  parallelKLABarrier512,
++  parallelKLABarrier1024,
++  parallelKLABarrier1048576,
+   parallelBarrier,
+   parallelBarrierCas,
+   parallelBarrierInline,
+@@ -97,6 +121,29 @@
+       clEnumVal(serialAsync, "Serial optimized"),
+       clEnumVal(serialMin, "Serial optimized with minimal runtime"),
+       clEnumVal(parallelAsync, "Parallel"),
++      clEnumVal(parallelKLA1, "Parallel KLA"),
++      clEnumVal(parallelKLA2, "Parallel KLA"),
++      clEnumVal(parallelKLA4, "Parallel KLA"),
++      clEnumVal(parallelKLA8, "Parallel KLA"),
++      clEnumVal(parallelKLA16, "Parallel KLA"),
++      clEnumVal(parallelKLA32, "Parallel KLA"),
++      clEnumVal(parallelKLA64, "Parallel KLA"),
++      clEnumVal(parallelKLA128, "Parallel KLA"),
++      clEnumVal(parallelKLA256, "Parallel KLA"),
++      clEnumVal(parallelKLA512, "Parallel KLA"),
++      clEnumVal(parallelKLA1024, "Parallel KLA"),
++      clEnumVal(parallelKLA1048576, "Parallel KLA"),
++      clEnumVal(parallelKLABarrier1, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier2, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier4, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier8, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier16, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier32, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier64, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier128, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier256, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier512, "Parallel KLABarrier"),
++      clEnumVal(parallelKLABarrier1024, "Parallel KLABarrier"),
+       clEnumVal(parallelBarrier, "Parallel optimized with barrier"),
+       clEnumVal(parallelBarrierCas, "Parallel optimized with barrier but using CAS"),
+       clEnumVal(parallelUndirected, "Parallel specialization for undirected graphs"),
+@@ -146,7 +193,8 @@
+ };
+ #endif
+ 
+-typedef Galois::Graph::LC_CSR_Graph<SNode, void> Graph;
++// typedef Galois::Graph::LC_CSR_Graph<SNode, void> Graph;
++typedef Galois::Graph::LC_Numa_Graph<SNode, void> Graph;
+ typedef Graph::GraphNode GNode;
+ 
+ Graph graph;
+@@ -188,6 +236,13 @@
+   }
+ };
+ 
++struct GNodeIndexer2: public std::unary_function<Pair<GNode, int>,unsigned int> {
++  unsigned int operator()(const Pair<GNode, int>& val) const {
++    //return graph.getData(val.first, Galois::NONE).dist;
++    return val.second;
++  }
++};
++
+ struct not_consistent {
+   bool operator()(GNode n) const {
+     unsigned int dist = graph.getData(n).dist;
+@@ -197,7 +252,7 @@
+       GNode dst = graph.getEdgeDst(ii);
+       unsigned int ddist = graph.getData(dst).dist;
+       if (ddist > dist + 1) {
+-        std::cerr << "bad level value: " << ddist << " > " << (dist + 1) << " " << n << " -> " << *ii << "\n";
++        // std::cerr << "bad level value: " << ddist << " > " << (dist + 1) << " " << n << " -> " << *ii << "\n";
+ 	return true;
+       }
+     }
+@@ -366,6 +421,102 @@
+   }
+ };
+ 
++template<int K>
++struct KLAAlgo {
++  typedef int tt_does_not_need_aborts;
++
++  std::string name() const { return "Parallel KLA"; }
++
++  void operator()(const GNode& source) const {
++    using namespace GaloisRuntime::WorkList;
++    typedef dChunkedLIFO<256> dChunk;
++    typedef KLABulkSynchronous<K, GNodeIndexer,dChunk> KLA;
++    
++    std::deque<GNode> initial;
++    graph.getData(source).dist = 0;
++    for (Graph::edge_iterator ii = graph.edge_begin(source),
++          ei = graph.edge_end(source); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst);
++      ddata.dist = 1;
++      initial.push_back(dst);
++    }
++
++    Galois::for_each<KLA>(initial.begin(), initial.end(), *this);
++  }
++
++  void operator()(GNode& n, Galois::UserContext<GNode>& ctx) const {
++    SNode& data = graph.getData(n, Galois::NONE);
++
++    unsigned int newDist = data.dist + 1;
++
++    for (Graph::edge_iterator ii = graph.edge_begin(n, Galois::NONE),
++          ei = graph.edge_end(n, Galois::NONE); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst, Galois::NONE);
++
++      unsigned int oldDist;
++      while (true) {
++        oldDist = ddata.dist;
++        if (oldDist <= newDist)
++          break;
++        if (__sync_bool_compare_and_swap(&ddata.dist, oldDist, newDist)) {
++          ctx.push(dst);
++          break;
++        }
++      }
++    }
++  }
++};
++//
++//! BFS using optimized flags and barrier scheduling 
++template<typename WL,bool useCas>
++struct KLAALgo2 {
++  typedef int tt_does_not_need_aborts;
++
++  std::string name() const { return "Parallel (Barrier)"; }
++  typedef Pair<GNode,int> ItemTy;
++
++  void operator()(const GNode& source) const {
++    std::deque<ItemTy> initial;
++
++    graph.getData(source).dist = 0;
++    for (Graph::edge_iterator ii = graph.edge_begin(source),
++          ei = graph.edge_end(source); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst);
++      ddata.dist = 1;
++      initial.push_back(ItemTy(dst, 2));
++    }
++    Galois::for_each<WL>(initial.begin(), initial.end(), *this);
++  }
++
++  void operator()(const ItemTy& item, Galois::UserContext<ItemTy>& ctx) const {
++    GNode n = item.first;
++
++    unsigned int newDist = item.second;
++
++    for (Graph::edge_iterator ii = graph.edge_begin(n, Galois::NONE),
++          ei = graph.edge_end(n, Galois::NONE); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst, Galois::NONE);
++
++      unsigned int oldDist;
++      while (true) {
++        oldDist = ddata.dist;
++        if (oldDist <= newDist)
++          break;
++        if (!useCas || __sync_bool_compare_and_swap(&ddata.dist, oldDist, newDist)) {
++          if (!useCas)
++            ddata.dist = newDist;
++          ctx.push(ItemTy(dst, newDist + 1));
++          break;
++        }
++      }
++    }
++  }
++};
++
+ /**
+  * Alternate between processing outgoing edges or incoming edges. Works for
+  * directed graphs as well, but just implement assuming graph is symmetric so
+@@ -499,6 +650,7 @@
+   }
+ };
+ 
++// old lsync
+ //! BFS using optimized flags and barrier scheduling 
+ template<typename WL,bool useCas>
+ struct BarrierAlgo {
+@@ -548,6 +700,54 @@
+ };
+ 
+ //! BFS using optimized flags and barrier scheduling 
++template<typename WL,bool useCas>
++struct BarrierAlgo2 {
++  typedef int tt_does_not_need_aborts;
++
++  std::string name() const { return "Parallel (Barrier)"; }
++  typedef GNode ItemTy;
++
++  void operator()(const GNode& source) const {
++    std::deque<ItemTy> initial;
++
++    graph.getData(source).dist = 0;
++    for (Graph::edge_iterator ii = graph.edge_begin(source),
++          ei = graph.edge_end(source); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst);
++      ddata.dist = 1;
++      initial.push_back(dst);
++    }
++    Galois::for_each<WL>(initial.begin(), initial.end(), *this);
++  }
++
++  void operator()(GNode& n, Galois::UserContext<ItemTy>& ctx) const {
++    SNode& data = graph.getData(n, Galois::NONE);
++
++    unsigned int newDist = data.dist + 1;
++
++    for (Graph::edge_iterator ii = graph.edge_begin(n, Galois::NONE),
++          ei = graph.edge_end(n, Galois::NONE); ii != ei; ++ii) {
++      GNode dst = graph.getEdgeDst(ii);
++      SNode& ddata = graph.getData(dst, Galois::NONE);
++
++      unsigned int oldDist;
++      while (true) {
++        oldDist = ddata.dist;
++        if (oldDist <= newDist)
++          break;
++        if (!useCas || __sync_bool_compare_and_swap(&ddata.dist, oldDist, newDist)) {
++          if (!useCas)
++            ddata.dist = newDist;
++          ctx.push(dst);
++          break;
++        }
++      }
++    }
++  }
++};
++
++//! BFS using optimized flags and barrier scheduling 
+ template<DetAlgo Version>
+ struct DetBarrierAlgo {
+   typedef int tt_needs_per_iter_alloc; // For LocalState
+@@ -805,6 +1005,17 @@
+ };
+ #endif
+ 
++struct print_dist
++{
++  void operator()(GNode n)
++  {
++    unsigned int id = graph.getData(n).id;
++    unsigned int dist = graph.getData(n).dist;
++
++    std::cout << "id = " << id << ", dist = " << dist << std::endl;
++  }
++};
++
+ template<typename AlgoTy>
+ void run() {
+   AlgoTy algo;
+@@ -818,7 +1029,9 @@
+   T.start();
+   algo(source);
+   T.stop();
+-  
++
++  //std::for_each(graph.begin(), graph.end(), print_dist());
++
+   Galois::Statistic("MeminfoPost", GaloisRuntime::MM::pageAllocInfo());
+ 
+   std::cout << "Report node: " << reportNode << " " << graph.getData(report) << "\n";
+@@ -851,9 +1064,33 @@
+     case serialAsync: run<SerialAsyncAlgo>(); break;
+     case serialMin: run<BarrierAlgo<FIFO<int,false>,false> >(); break;
+     case parallelAsync: run<AsyncAlgo>();  break;
+-    case parallelBarrierCas: run<BarrierAlgo<BSWL,true> >(); break;
+-    case parallelBarrier: run<BarrierAlgo<BSWL,false> >(); break;
+-    case parallelBarrierInline: run<BarrierAlgo<BSInline,false> >(); break;
++    case parallelKLA1: run<KLAAlgo<1> >();  break;
++    case parallelKLA2: run<KLAAlgo<2> >();  break;
++    case parallelKLA4: run<KLAAlgo<4> >();  break;
++    case parallelKLA8: run<KLAAlgo<8> >();  break;
++    case parallelKLA16: run<KLAAlgo<16> >();  break;
++    case parallelKLA32: run<KLAAlgo<32> >();  break;
++    case parallelKLA64: run<KLAAlgo<64> >();  break;
++    case parallelKLA128: run<KLAAlgo<128> >();  break;
++    case parallelKLA256: run<KLAAlgo<256> >();  break;
++    case parallelKLA512: run<KLAAlgo<512> >();  break;
++    case parallelKLA1024: run<KLAAlgo<1024> >();  break;
++    case parallelKLA1048576: run<KLAAlgo<1048576> >();  break;
++    case parallelKLABarrier1: run<BarrierAlgo<KLABulkSynchronous<1, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier2: run<BarrierAlgo<KLABulkSynchronous<2, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier4: run<BarrierAlgo<KLABulkSynchronous<4, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier8: run<BarrierAlgo<KLABulkSynchronous<8, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier16: run<BarrierAlgo<KLABulkSynchronous<16, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier32: run<BarrierAlgo<KLABulkSynchronous<32, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier64: run<BarrierAlgo<KLABulkSynchronous<64, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier128: run<BarrierAlgo<KLABulkSynchronous<128, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier256: run<BarrierAlgo<KLABulkSynchronous<256, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier512: run<BarrierAlgo<KLABulkSynchronous<512, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier1024: run<BarrierAlgo<KLABulkSynchronous<1024, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelKLABarrier1048576: run<BarrierAlgo<KLABulkSynchronous<1048576, GNodeIndexer2, dChunkedLIFO<256> >, true> >();  break;
++    case parallelBarrierCas: run<BarrierAlgo2<BSWL,true> >(); break;
++    case parallelBarrier: run<BarrierAlgo2<BSWL,false> >(); break;
++    case parallelBarrierInline: run<BarrierAlgo2<BSInline,false> >(); break;
+     case parallelUndirected: run<UndirectedAlgo>(); break;
+     case parallelTBBAsync: run<TBBAsyncAlgo>(); break;
+     case parallelTBBBarrier: run<TBBBarrierAlgo>(); break;
+Only in Galois-2.1.8-mod/apps/bfs: bfs.cpp~
+Only in Galois-2.1.8-mod/apps/bfs: .bfs.cpp.swp
+Only in Galois-2.1.8-mod/include/Galois/Runtime: .PerThreadStorage.h.swp
+diff -ru Galois-2.1.8/include/Galois/Runtime/WorkList.h Galois-2.1.8-mod/include/Galois/Runtime/WorkList.h
+--- Galois-2.1.8/include/Galois/Runtime/WorkList.h	2013-05-09 12:54:50.000000000 -0500
++++ Galois-2.1.8-mod/include/Galois/Runtime/WorkList.h	2014-06-05 18:25:55.000000000 -0500
+@@ -761,6 +761,7 @@
+   GaloisRuntime::GBarrier barrier2;
+   GaloisRuntime::LL::CacheLineStorage<volatile long> some;
+   volatile bool empty;
++  //long sz;
+ 
+  public:
+   typedef T value_type;
+@@ -774,13 +775,16 @@
+     typedef BulkSynchronous<typename ContainerTy::template retype<Tnew>::WL,Tnew,concurrent> WL;
+   };
+ 
+-  BulkSynchronous(): empty(false) {
++  BulkSynchronous(): empty(false)/*, sz(0)*/ {
+     unsigned num = galoisActiveThreads;
+     barrier1.reinit(num);
+     barrier2.reinit(num);
+   }
+ 
+   void push(const value_type& val) {
++    //sz++;
++    //printf("size %ld\n", sz);
++
+     wls[(tlds.getLocal()->round + 1) & 1].push(val);
+   }
+ 
+@@ -806,8 +810,10 @@
+         return r; // empty
+ 
+       r = wls[tld.round].pop();
+-      if (r)
++      if (r) {
++        //--sz;
+         return r;
++      }
+ 
+       barrier1.wait();
+       if (GaloisRuntime::LL::getTID() == 0) {
+@@ -820,6 +826,7 @@
+ 
+       r = wls[tld.round].pop();
+       if (r) {
++        //--sz;
+         some.data = true;
+         return r;
+       }
+@@ -828,6 +835,107 @@
+ };
+ GALOIS_WLCOMPILECHECK(BulkSynchronous)
+ 
++template<int K, class Indexer = DummyIndexer<int>, class ContainerTy=dChunkedFIFO<>, class T=int, bool concurrent = true>
++class KLABulkSynchronous : private boost::noncopyable {
++
++  typedef typename ContainerTy::template rethread<concurrent>::WL CTy;
++
++  struct TLD {
++    unsigned round;
++    TLD(): round(0) { }
++  };
++
++  CTy wls[2];
++  GaloisRuntime::PerThreadStorage<TLD> tlds;
++  GaloisRuntime::GBarrier barrier1;
++  GaloisRuntime::GBarrier barrier2;
++  GaloisRuntime::LL::CacheLineStorage<volatile long> some;
++  volatile bool empty;
++  Indexer I;
++
++  //long sz;
++
++ public:
++  typedef T value_type;
++
++  template<bool newconcurrent>
++  struct rethread {
++    typedef KLABulkSynchronous<K,Indexer,ContainerTy,T,newconcurrent> WL;
++  };
++  template<typename Tnew>
++  struct retype {
++    typedef KLABulkSynchronous<K,Indexer,typename ContainerTy::template retype<Tnew>::WL,Tnew,concurrent> WL;
++  };
++
++  typedef typename safe_result_of<false, Indexer(T)>::type IndexerValue;
++
++  KLABulkSynchronous(): empty(false)/*, sz(0)*/ {
++    unsigned num = galoisActiveThreads;
++    barrier1.reinit(num);
++    barrier2.reinit(num);
++  }
++
++  void push(const value_type& val) {
++    
++    const IndexerValue index = I(val);
++    const int klass = index / K;
++
++    //const int klass = tlds.getLocal()->round + 1;
++
++    //sz++;
++    //printf("size %ld\n", sz);
++
++    wls[klass & 1].push(val);
++  }
++
++  template<typename ItTy>
++  void push(ItTy b, ItTy e) {
++    while (b != e)
++      push(*b++);
++  }
++
++  template<typename RangeTy>
++  void push_initial(RangeTy range) {
++    push(range.local_begin(), range.local_end());
++    tlds.getLocal()->round = 0;
++    some.data = true;
++  }
++
++  boost::optional<value_type> pop() {
++    TLD& tld = *tlds.getLocal();
++    boost::optional<value_type> r;
++    
++    while (true) {
++      if (empty)
++        return r; // empty
++
++      r = wls[tld.round].pop();
++      if (r) {
++         //sz--;
++        return r;
++      }
++
++      barrier1.wait();
++      if (GaloisRuntime::LL::getTID() == 0) {
++        if (!some.data)
++          empty = true;
++        some.data = false; 
++      }
++      tld.round = (tld.round + 1) & 1;
++      barrier2.wait();
++
++      r = wls[tld.round].pop();
++      if (r) {
++        //sz--;
++        some.data = true;
++        return r;
++      }
++    }
++  }
++};
++GALOIS_WLCOMPILECHECK(KLABulkSynchronous)
++
++
+ //End namespace
+ 
+ }
+Only in Galois-2.1.8-mod/include/Galois/Runtime: .WorkList.h.swp
